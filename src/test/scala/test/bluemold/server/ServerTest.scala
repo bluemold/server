@@ -2,7 +2,6 @@ package test.bluemold.server
 
 import junit.framework._
 import bluemold.actor.Actor._
-import java.util.concurrent.CountDownLatch
 import bluemold.server.{ServerActor, Main}
 import bluemold.actor._
 
