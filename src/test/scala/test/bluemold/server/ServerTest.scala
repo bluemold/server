@@ -59,7 +59,7 @@ class ServerTest extends TestCase("server") {
         requestCount += 1
         val sReq = ServerActor.ServerRequest( requestCount, "stop" )
         outstanding ::= sReq
-        getCluster.sendAll( classOf[ServerActor].getName, sReq )
+        getCluster.sendAll( classOf[ServerActor], sReq )
       case res: ServerActor.GenericServerResponse =>
         if ( res.res startsWith "stopping " )
           self.stop()

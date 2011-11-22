@@ -28,7 +28,7 @@ class ServerActor extends RegisteredActor  {
   def getCurrentLocalNodes = localNodes filter { _._2 > System.currentTimeMillis() - timeoutForNodeExisting }
 
   def heartBeat() {
-    getCluster.sendAll( classOf[ServerActor].getName, ServerActor.ServerDownBeat() )
+    getCluster.sendAll( classOf[ServerActor], ServerActor.ServerDownBeat() )
     heartBeatTimeout = onTimeout( heartBeatDelay ) { heartBeat() }
   }
 

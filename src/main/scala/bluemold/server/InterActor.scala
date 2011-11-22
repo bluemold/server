@@ -32,7 +32,7 @@ class InterActor extends RegisteredActor  {
   def getCurrentLocalNodes = localNodes filter { _._2 > System.currentTimeMillis() - timeoutForNodeExisting }
 
   def heartBeat() {
-    getCluster.sendAll( classOf[ServerActor].getName, ServerActor.ServerDownBeat() )
+    getCluster.sendAll( classOf[ServerActor], ServerActor.ServerDownBeat() )
     heartBeatTimeout = onTimeout( heartBeatDelay ) { heartBeat() }
   }
 
@@ -65,7 +65,7 @@ class InterActor extends RegisteredActor  {
                     val sReq = ServerActor.ServerRequest( requestCount, unmatchedReq )
                     outstanding ::= sReq
                     println( "Req["+requestCount+"]: " + unmatchedReq )
-                    getCluster.sendAll( node, classOf[ServerActor].getName, sReq )
+                    getCluster.sendAll( node, classOf[ServerActor], sReq )
                 }
               case None =>
                 println( "Can't perform that request without a current location." )
@@ -126,7 +126,7 @@ class InterActor extends RegisteredActor  {
         requestCount += 1
         val sReq = ServerActor.ServerRequest( requestCount, req )
         outstanding ::= sReq
-        getCluster.sendAll( location.get, classOf[ServerActor].getName, sReq )
+        getCluster.sendAll( location.get, classOf[ServerActor], sReq )
         println( "Req["+requestCount+"]: " + req )
       case None =>
         println( "List Local Nodes: " )
@@ -151,7 +151,7 @@ class InterActor extends RegisteredActor  {
     requestCount += 1
     val sReq = ServerActor.ServerRequest( requestCount, req )
     outstanding ::= sReq
-    getCluster.sendAll( location.get, classOf[ServerActor].getName, sReq )
+    getCluster.sendAll( location.get, classOf[ServerActor], sReq )
     println( "Req["+requestCount+"]: " + req )
 
   }
