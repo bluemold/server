@@ -1,7 +1,7 @@
 package bluemold.server
 
 import bluemold.actor.Actor._
-import bluemold.actor.{FiberStrategyFactory, UDPCluster, ActorRef}
+import bluemold.actor.{FiberStrategyFactory, UDPNode, ActorRef}
 
 
 object Interact {
@@ -20,7 +20,7 @@ object Interact {
   }
 
   def getReplActor: ActorRef = {
-    implicit val cluster = UDPCluster.getCluster( "bluemold-repl", "default" )
+    implicit val node = UDPNode.getNode( "bluemold-repl", "default" )
     implicit val strategyFactory = new FiberStrategyFactory()
     actorOf( new InterActor() ).start()
   }

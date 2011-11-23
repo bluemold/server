@@ -40,7 +40,7 @@ class ServerTest extends TestCase("server") {
   }
   
   def getInterActor: ActorRef = {
-    implicit val cluster = UDPCluster.getCluster( "bluemold-repl", "default" )
+    implicit val node = UDPNode.getNode( "bluemold-repl", "default" )
     implicit val strategyFactory = new FiberStrategyFactory()
     actorOf( new InterActor() ).start()
   }
@@ -59,7 +59,7 @@ class ServerTest extends TestCase("server") {
         requestCount += 1
         val sReq = ServerActor.ServerRequest( requestCount, "stop" )
         outstanding ::= sReq
-        getCluster.sendAll( classOf[ServerActor], sReq )
+        getNode.sendAll( classOf[ServerActor], sReq )
       case res: ServerActor.GenericServerResponse =>
         if ( res.res startsWith "stopping " )
           self.stop()

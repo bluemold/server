@@ -1,6 +1,6 @@
 package bluemold.server
 
-import bluemold.actor.{CancelableEvent, ClusterIdentity, RegisteredActor}
+import bluemold.actor.{CancelableEvent, NodeIdentity, RegisteredActor}
 import bluemold.server.ServerActor.{ServerListNodesResponse, GenericServerResponse, ServerUpBeat}
 
 
@@ -12,9 +12,9 @@ class InterActor extends RegisteredActor  {
   var outstanding: List[ServerActor.ServerRequest] = _
   var received: List[ServerActor.ServerResponse] = _
   var requestCount: Long = _
-  var localNodes: List[(ClusterIdentity,Long)] = _
-  var lastNodeList: List[ClusterIdentity] = _
-  var location: Option[ClusterIdentity] = _
+  var localNodes: List[(NodeIdentity,Long)] = _
+  var lastNodeList: List[NodeIdentity] = _
+  var location: Option[NodeIdentity] = _
   var heartBeatTimeout: CancelableEvent = _
   val heartBeatDelay = 1000L
   val timeoutForNodeExisting = 300000L
@@ -32,7 +32,7 @@ class InterActor extends RegisteredActor  {
   def getCurrentLocalNodes = localNodes filter { _._2 > System.currentTimeMillis() - timeoutForNodeExisting }
 
   def heartBeat() {
-    getCluster.sendAll( classOf[ServerActor], ServerActor.ServerDownBeat() )
+    getNode.sendAll( classOf[ServerActor], ServerActor.ServerDownBeat() )
     heartBeatTimeout = onTimeout( heartBeatDelay ) { heartBeat() }
   }
 
@@ -65,7 +65,7 @@ class InterActor extends RegisteredActor  {
                     val sReq = ServerActor.ServerRequest( requestCount, unmatchedReq )
                     outstanding ::= sReq
                     println( "Req["+requestCount+"]: " + unmatchedReq )
-                    getCluster.sendAll( node, classOf[ServerActor], sReq )
+                    getNode.sendAll( node, classOf[ServerActor], sReq )
                 }
               case None =>
                 println( "Can't perform that request without a current location." )
@@ -126,7 +126,7 @@ class InterActor extends RegisteredActor  {
         requestCount += 1
         val sReq = ServerActor.ServerRequest( requestCount, req )
         outstanding ::= sReq
-        getCluster.sendAll( location.get, classOf[ServerActor], sReq )
+        getNode.sendAll( location.get, classOf[ServerActor], sReq )
         println( "Req["+requestCount+"]: " + req )
       case None =>
         println( "List Local Nodes: " )
@@ -151,7 +151,7 @@ class InterActor extends RegisteredActor  {
     requestCount += 1
     val sReq = ServerActor.ServerRequest( requestCount, req )
     outstanding ::= sReq
-    getCluster.sendAll( location.get, classOf[ServerActor], sReq )
+    getNode.sendAll( location.get, classOf[ServerActor], sReq )
     println( "Req["+requestCount+"]: " + req )
 
   }
