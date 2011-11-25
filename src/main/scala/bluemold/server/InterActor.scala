@@ -109,7 +109,7 @@ class InterActor extends RegisteredActor  {
   def currentLocation() {
     print( "Current Node: " )
     location match {
-      case Some( node ) => println( node )
+      case Some( node ) => println( node + " path= " + node.path )
       case None => println( "Not Set" );
     }
   }
