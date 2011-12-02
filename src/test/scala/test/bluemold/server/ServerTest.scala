@@ -20,6 +20,7 @@ object ServerTest {
  * Unit test for actor clustering.
  */
 class ServerTest extends TestCase("server") {
+  import ServerActor._
   val tooLong = 10000 // ten seconds is too long
   def testBasics() {
     val start = System.currentTimeMillis()
@@ -46,7 +47,7 @@ class ServerTest extends TestCase("server") {
   }
     
   class InterActor extends RegisteredActor  {
-    var outstanding: List[ServerActor.ServerRequest] = _
+    var outstanding: List[ServerRequest] = _
     var requestCount: Long = _
   
     protected def init() {
@@ -57,10 +58,10 @@ class ServerTest extends TestCase("server") {
     protected def react = {
       case "start" =>
         requestCount += 1
-        val sReq = ServerActor.ServerRequest( requestCount, "stop" )
+        val sReq = GenericServerRequest( requestCount, "stop" )
         outstanding ::= sReq
         getNode.sendAll( classOf[ServerActor], sReq )
-      case res: ServerActor.GenericServerResponse =>
+      case res: GenericServerResponse =>
         if ( res.res startsWith "stopping " )
           self.stop()
       case a => println( "Error - I don't understand: " + a )  

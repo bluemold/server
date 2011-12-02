@@ -1,16 +1,15 @@
 package bluemold.server
 
 import bluemold.actor.{CancelableEvent, NodeIdentity, RegisteredActor}
-import bluemold.server.ServerActor.{ServerListNodesResponse, GenericServerResponse, ServerUpBeat}
-
 
 object InterActor {
   final case class UserRequest( req: String )
 }
 class InterActor extends RegisteredActor  {
   import InterActor._
-  var outstanding: List[ServerActor.ServerRequest] = _
-  var received: List[ServerActor.ServerResponse] = _
+  import ServerActor._
+  var outstanding: List[ServerRequest] = _
+  var received: List[ServerResponse] = _
   var requestCount: Long = _
   var localNodes: List[(NodeIdentity,Long)] = _
   var lastNodeList: List[NodeIdentity] = _
@@ -32,7 +31,7 @@ class InterActor extends RegisteredActor  {
   def getCurrentLocalNodes = localNodes filter { _._2 > System.currentTimeMillis() - timeoutForNodeExisting }
 
   def heartBeat() {
-    getNode.sendAll( classOf[ServerActor], ServerActor.ServerDownBeat() )
+    getNode.sendAll( classOf[ServerActor], ServerDownBeat() )
     heartBeatTimeout = onTimeout( heartBeatDelay ) { heartBeat() }
   }
 
@@ -40,11 +39,12 @@ class InterActor extends RegisteredActor  {
   val CurrentLocation = """current location""".r
   val ResetLocation = """reset location""".r
   val GotoNode = """goto node ([a-zA-Z0-9\-]+)""".r
-  val CreateBuild = """create build ([a-zA-Z]+) using ([a-zA-Z_\-/\\:.]+)""".r 
+  val CreateBuild = """create build ([a-zA-Z]+) using ([a-zA-Z0-9_\-/\\:.]+)""".r 
   val CreateDeploy = """create deploy ([a-zA-Z]+) from ([a-zA-Z]+)""".r 
 
-  protected def react = myReact
-  protected val myReact: PartialFunction[Any,Unit] = {
+  val expireTime = 86400000L // one day
+  
+  protected def react = {
     case ServerUpBeat( node ) =>
       localNodes = (node, System.currentTimeMillis()) :: ( getCurrentLocalNodes filterNot { _._1 == node } )
     case UserRequest( req ) =>
@@ -62,7 +62,7 @@ class InterActor extends RegisteredActor  {
                   case CreateDeploy( name, build ) => createDeploy( name, build )
                   case unmatchedReq =>
                     requestCount += 1
-                    val sReq = ServerActor.ServerRequest( requestCount, unmatchedReq )
+                    val sReq = GenericServerRequest( requestCount, unmatchedReq )
                     outstanding ::= sReq
                     println( "Req["+requestCount+"]: " + unmatchedReq )
                     getNode.sendAll( node, classOf[ServerActor], sReq )
@@ -88,9 +88,9 @@ class InterActor extends RegisteredActor  {
       }
       if ( ! outstanding.isEmpty ) {
         val now = System.currentTimeMillis()
-        val expired = outstanding.foldLeft ( 0: Int ) { ( b, req ) => b + ( if ( req.created >= now - 10000 ) 0 else 1 ) }
+        val expired = outstanding.foldLeft ( 0: Int ) { ( b, req ) => b + ( if ( req.created >= now - expireTime ) 0 else 1 ) }
         if ( expired > 0 ) {
-          outstanding = outstanding filter { _.created >= now - 10000 }
+          outstanding = outstanding filter { _.created >= now - expireTime }
           println( "Expired: " + expired )
         }
         val pending = outstanding.size
@@ -98,7 +98,7 @@ class InterActor extends RegisteredActor  {
           println( "Pending: " + pending )
       }
       print( "> " )
-    case res: ServerActor.ServerResponse =>
+    case res: ServerResponse =>
       if ( ! ( outstanding forall { _.id != res.id } ) ) {
         outstanding = outstanding filter { r => r.id != res.id }
         received ::= res 
@@ -124,7 +124,7 @@ class InterActor extends RegisteredActor  {
       case Some( node ) =>
         val req = "list nodes"
         requestCount += 1
-        val sReq = ServerActor.ServerRequest( requestCount, req )
+        val sReq = GenericServerRequest( requestCount, req )
         outstanding ::= sReq
         getNode.sendAll( location.get, classOf[ServerActor], sReq )
         println( "Req["+requestCount+"]: " + req )
@@ -145,19 +145,16 @@ class InterActor extends RegisteredActor  {
   }
 
   def createBuild( name: String, filename: String ) {
-    println( "Create Build: " + name + " = " + filename )
-
-    val req = "list nodes"
+    val req = "create build"
     requestCount += 1
-    val sReq = ServerActor.ServerRequest( requestCount, req )
+    val build = Build( name, filename )
+    val sReq = CreateBuildRequest( requestCount, req, build )
     outstanding ::= sReq
-    getNode.sendAll( location.get, classOf[ServerActor], sReq )
-    println( "Req["+requestCount+"]: " + req )
-
+    println( "Req["+requestCount+"]: " + req + ": " + name + " = " + filename )
+    actorOf( new BuildPusher( location.get, sReq, self ) ).start()
   }
 
   def createDeploy( name: String, build: String ) {
     println( "Create Deploy: " + name + ", build = " + build )
-    
   }
 }
