@@ -42,6 +42,10 @@ class InterActor extends RegisteredActor  {
   val CreateBuild = """create build ([a-zA-Z]+) using ([a-zA-Z0-9_\-/\\:.]+)""".r 
   val CreateDeploy = """create deploy ([a-zA-Z]+) from ([a-zA-Z]+)""".r 
 
+  val GotoLast = """goto last""".r 
+  val ShowNetworkSnapshot = """show network snapshot""".r 
+  val ShowNetworkSnapshotX = """show network snapshot ([0-9])""".r 
+
   val expireTime = 86400000L // one day
   
   protected def react = {
@@ -50,6 +54,9 @@ class InterActor extends RegisteredActor  {
     case UserRequest( req ) =>
       if ( ! req.isEmpty ) {
         req match {
+          case GotoLast() => gotoLastLocation()
+          case ShowNetworkSnapshot() => showNetworkSnapshot( 1000L )
+          case ShowNetworkSnapshotX( duration ) => showNetworkSnapshot( duration.toLong * 1000L )
           case CurrentLocation() => currentLocation()
           case ResetLocation() => resetLocation()
           case ListNodes() => listNodes()
@@ -134,11 +141,32 @@ class InterActor extends RegisteredActor  {
     }
   }
 
+  def showNetworkSnapshot( duration: Long ) {
+    getNode.showNetworkSnapshot( duration )
+  }
+  def gotoLastLocation() {
+    getNode.getStore.get( "lastLocation" ) match {
+      case Some(name) =>
+        println( "Attempting to go to: " + name )
+        gotoNode( name )
+      case None => println( "No last node" ) 
+    }
+  }
+  def saveLastLocation() {
+    location match {
+      case Some( nodeIdentity ) =>
+        val store = getNode.getStore
+        store.put( "lastLocation", nodeIdentity.toString )
+        store.flush()
+      case None => // ignore
+    }
+  }
+
   def gotoNode( name: String ) {
     localNodes find { _._1.toString == name } match {
-      case Some((node,time)) => location = Some(node); currentLocation()
+      case Some((node,time)) => location = Some(node); saveLastLocation(); currentLocation()
       case None => lastNodeList find { _.toString == name } match {
-        case Some(node) => location = Some(node); currentLocation()
+        case Some(node) => location = Some(node); saveLastLocation(); currentLocation()
         case None => println( "No node found by that name" )
       }
     }
