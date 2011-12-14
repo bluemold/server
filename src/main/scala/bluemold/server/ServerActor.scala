@@ -5,6 +5,7 @@ import bluemold.actor._
 import java.io._
 import scala.math._
 import bluemold.actor.Persist.{ReadBytes, WroteBytes}
+import bluemold.io.{AsyncWriter, AsyncReader}
 
 object ServerActor {
   final case class ServerDownBeat() { val created = System.currentTimeMillis() }
@@ -71,7 +72,7 @@ class ServerActor extends RegisteredActor  {
 class BuildPuller( id: Long, build: Build, replyChannel: ReplyChannel ) extends RegisteredActor {
   import ServerActor._
 
-  var out: OutputStream = _
+  var out: AsyncWriter = _
   var data: List[(Long,Array[Byte])] = _
   var totalSize: Long = _
   var blockSize: Long = _
@@ -80,8 +81,10 @@ class BuildPuller( id: Long, build: Build, replyChannel: ReplyChannel ) extends 
   var waitingForStart: Long = _
   var waitingForSize: Long = _
   var waitingFor: List[Long] = _
+  var waitingForWrite: List[Long] = _
   protected def init() {
-    out = new FileOutputStream( new File( getNode.getStore.getFileContainer( build.name ), build.filename ) )
+    val file = new File( getNode.getStore.getFileContainer( build.name ), build.filename )
+    out = Persist.getAsyncWriter( file )
     totalSize = -1
     blockSize = -1
     totalBlocks = -1
@@ -89,6 +92,7 @@ class BuildPuller( id: Long, build: Build, replyChannel: ReplyChannel ) extends 
     waitingForStart = -1
     waitingForSize = -1
     waitingFor = null
+    waitingForWrite = Nil
     replyChannel issueReply GenericServerResponse( id, "begin" )
   }
   protected def react = {
@@ -111,16 +115,11 @@ class BuildPuller( id: Long, build: Build, replyChannel: ReplyChannel ) extends 
         reply( CreateBuildReady( id, "ok", build, waitingForStart ) )
       }
     case CreateBuildData( rId, res, rBuild, rIndex, rData ) if totalSize != -1 =>
-//      println( "CreateBuildData" )
+//      println( "CreateBuildData: " + rIndex )
       if ( waitingFor contains rIndex ) {
-        data ::= (rIndex,rData)
         waitingFor = waitingFor filterNot { _ == rIndex }
-        if ( waitingFor.isEmpty ) {
-          blocksCompleted += waitingForSize
-          val datas = data sortWith { _._1 < _._1 } map { _._2 } 
-          Persist.writeList( datas, out, Some(( waitingForStart, datas, 0, replyChannel )) )
-          data = Nil
-        }
+        waitingForWrite ::= rIndex
+        Persist.writeAsync( rData, rIndex * blockSize, out, Some(( rIndex, rData, 0, replyChannel )) )
       }
     case CreateBuildReceivedQuery( rId, res, rBuild, rTotalSize, rBlockSize, rNextSetStart, rNextSetSize ) if totalSize != -1 =>
 //      println( "CreateBuildReceivedQuery" )
@@ -133,23 +132,33 @@ class BuildPuller( id: Long, build: Build, replyChannel: ReplyChannel ) extends 
       } else {
         // todo
       }
-    case WroteBytes( true, Some(( start: Long, datas: List[Array[Byte]], count: Int, channel: ReplyChannel )) ) if start == waitingForStart =>
-//      println( "WroteBytes success" )
-      if ( blocksCompleted < totalBlocks )
-        channel.issueReply( CreateBuildReceived( id, "ok", build, waitingForStart ) )
-      else {
-        out.close()
-        channel.issueReply( CreateBuildCompleted( id, "ok", build ) )
-        onTimeout( 1000 ) { self.stop() }
-      }
-    case WroteBytes( false, Some(( start: Long, datas: List[Array[Byte]], count: Int, channel: ReplyChannel )) ) if start == waitingForStart =>
+    case WroteBytes( true, Some(( index: Long, data: Array[Byte], count: Int, channel: ReplyChannel )) ) if index >= waitingForStart && index < waitingForStart + waitingForSize =>
+//      println( "WroteBytes success: " + index )
+      if ( waitingForWrite contains index ) {
+        waitingForWrite = waitingForWrite filterNot { _ == index }
+      }      
+      
+      if ( waitingFor.isEmpty && waitingForWrite.isEmpty ) {
+        blocksCompleted += waitingForSize
+//        println( "blocksCompleted: " + blocksCompleted )
+        if ( blocksCompleted < totalBlocks )
+          channel.issueReply( CreateBuildReceived( id, "ok", build, waitingForStart ) )
+        else {
+          out.close()
+          channel.issueReply( CreateBuildCompleted( id, "ok", build ) )
+          onTimeout( 1000 ) { self.stop() }
+        }
+      } // else println( "waitingFor: " + waitingFor + " waitingForWrite: " + waitingForWrite )
+
+    case WroteBytes( false, Some(( index: Long, data: Array[Byte], count: Int, channel: ReplyChannel )) ) if index >= waitingForStart && index < waitingForStart + waitingForSize =>
 //      println( "WroteBytes failed" )
       if ( count < 3 )
-        onTimeout( 1000 ) {
-          Persist.writeList( datas, out, Some(( start, datas, count + 1, channel )) ) 
+        onTimeout( 100 ) {
+          Persist.writeAsync( data, index * blockSize, out, Some(( index, data, count + 1, channel )) ) 
         }
       else {
         // Fail miserably
+        throw new RuntimeException( "What Happened!" )
       }
     case msg => println( "BuildPuller got: " + msg ) // ignore
   }
@@ -157,19 +166,23 @@ class BuildPuller( id: Long, build: Build, replyChannel: ReplyChannel ) extends 
 
 class BuildPusher( target: NodeIdentity, request: CreateBuildRequest, parent: ActorRef ) extends RegisteredActor {
   val blockConcurrency = 20L
-  var in: InputStream = _
+  var in: AsyncReader = _
   var totalSize: Long = _
   var blockSize: Long = _
   var totalBlocks: Long = _
   var waitingForStart: Long = _
   var waitingForSize: Long = _
   val startTime = System.currentTimeMillis()
+
+  val eventTimeout = 20000L
+  var waitingForEvent: CancelableEvent = _
   protected def init() {
     val file = new File( request.build.filename )
     if ( file.exists() ) {
-      in = new FileInputStream( file )
+      in = Persist.getAsyncReader( file )
       totalSize = file.length()
-      blockSize = 65536
+      if ( totalSize < 1024 * 1024 ) blockSize = 65536
+      else blockSize = 65536 * 4
       totalBlocks = totalSize / blockSize + ( if ( totalSize % blockSize == 0 ) 0 else 1 )
       waitingForStart = 0
       waitingForSize = min( blockConcurrency, totalBlocks - waitingForStart )
@@ -179,42 +192,75 @@ class BuildPusher( target: NodeIdentity, request: CreateBuildRequest, parent: Ac
       onTimeout( 1000 ) { self.stop() }
     }
   }
+  private def replyWithTimeout( name: String )( msg: Any ) {
+    val channel = replyChannel
+    def replyWithMessage() {
+      channel.issueReply( msg )
+      waitingForEvent = onTimeout( eventTimeout ) {
+        println( name + " timed out" )
+        replyWithMessage()
+      }
+    }
+    replyWithMessage()
+  }
+  private def doWithTimeout( name: String )( body: => Unit ) {
+    def doBody() {
+      body
+      waitingForEvent = onTimeout( eventTimeout ) {
+        println( name + " timed out" )
+        doBody()
+      }
+    }
+    doBody()
+  }
   protected def react = {
     case GenericServerResponse( id, "begin" ) if id == request.id =>
 //      println( "BuildPusher got begin" )
-      reply( CreateBuildMeta( id, "init", request.build, totalSize, blockSize, waitingForStart, waitingForSize ) )      
+      replyWithTimeout( "initial CreateBuildMeta")( CreateBuildMeta( id, "init", request.build, totalSize, blockSize, waitingForStart, waitingForSize ) )
     case CreateBuildReady( id, res, build, nextSetStart ) if id == request.id =>
 //      println( "CreateBuildReady" )
       if ( nextSetStart == waitingForStart ) {
-        val currentSize = waitingForStart * blockSize
-        val currentTime = System.currentTimeMillis()
-        val seconds = ( currentTime - startTime ) / 1000
-        val rate = if ( seconds > 0 ) currentSize / seconds else 0
-        println( "BuildPusher: " + currentSize + " bytes in " + seconds + " seconds at " + rate + " bytes per second" )
-        val bytes = new Array[Byte]( blockSize.toInt )
-        Persist.read( bytes, in, Some(( waitingForStart, bytes, 0, replyChannel )) )
+        waitingForEvent.cancel()
+        doWithTimeout( "Read in from file" ) {
+          val currentSize = waitingForStart * blockSize
+          val currentTime = System.currentTimeMillis()
+          val seconds = ( currentTime - startTime ) / 1000
+          val rate = if ( seconds > 0 ) currentSize / seconds else 0
+          println( "BuildPusher: " + currentSize + " bytes in " + seconds + " seconds at " + rate + " bytes per second" )
+          ( waitingForStart until (waitingForStart + waitingForSize ) ) foreach { index =>
+            val bytes = new Array[Byte]( blockSize.toInt )
+            Persist.readAsync( bytes, index * blockSize, in, Some(( index, bytes, 0, replyChannel )) )
+          }
+        }
       } else throw new RuntimeException( "What Happened!" )
     case ReadBytes( numBytes, Some(( index: Long, bytes: Array[Byte], count: Int, channel: ReplyChannel )) ) =>
-//      println( "ReadBytes" )
+//      println( "ReadBytes: " + index )
       // todo checks for errors like ioException?
-      val bytesToSend = if ( numBytes == bytes.length ) bytes else bytes.slice( 0, numBytes )
-      channel.issueReply( CreateBuildData( request.id, "data", request.build, index, bytesToSend ) )
-      if ( index + 1 < waitingForStart + waitingForSize ) {
-        val bytes = new Array[Byte]( blockSize.toInt )
-        Persist.read( bytes, in, Some(( index + 1, bytes, 0, channel )) )
+      // timeout in place in case this message is lost
+      if ( numBytes == 0 ) {
+        println( "Read returned 0 bytes?" )
+      } else if ( numBytes > 0 ) {
+        val bytesToSend = if ( numBytes == bytes.length ) bytes else bytes.slice( 0, numBytes )
+        channel.issueReply( CreateBuildData( request.id, "data", request.build, index, bytesToSend ) )
+      } else {
+        println( "Read returned negative bytes?" )
       }
     case CreateBuildReceived( id, res, build, nextSetStart ) if id == request.id =>
 //      println( "CreateBuildReceived" )
       if ( nextSetStart == waitingForStart ) {
+        waitingForEvent.cancel()
         waitingForStart = waitingForStart + waitingForSize
         waitingForSize = min( blockConcurrency, totalBlocks - waitingForStart )
-        reply( CreateBuildMeta( id, "init", request.build, totalSize, blockSize, waitingForStart, waitingForSize ) )
-      }
+        replyWithTimeout( "next CreateBuildMeta[" + waitingForStart + "]" ) {
+          CreateBuildMeta( id, "init", request.build, totalSize, blockSize, waitingForStart, waitingForSize )
+        }
+      } else throw new RuntimeException( "What Happened!" )
     case CreateBuildMissing( id, res, build, startIndex, endIndex ) if id == request.id =>
       println( "CreateBuildMissing: " + startIndex + " to " + endIndex  )
       // todo, oops need to support this
     case CreateBuildCompleted( id, res, build ) if id == request.id =>
 //      println( "CreateBuildCompleted" )
+      waitingForEvent.cancel()
       val endTime = System.currentTimeMillis()
       val seconds = ( endTime - startTime ) / 1000
       val rate = if ( seconds > 0 ) totalSize / seconds else 0
