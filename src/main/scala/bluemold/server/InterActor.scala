@@ -39,8 +39,9 @@ class InterActor extends RegisteredActor  {
   val CurrentLocation = """current location""".r
   val ResetLocation = """reset location""".r
   val GotoNode = """goto node ([a-zA-Z0-9\-]+)""".r
-  val CreateBuild = """create build ([a-zA-Z]+) using ([a-zA-Z0-9_\-/\\:.]+)""".r 
-  val CreateDeploy = """create deploy ([a-zA-Z]+) from ([a-zA-Z]+)""".r 
+  val CreateBuild = """create build ([a-zA-Z0-9_\-]+) using ([a-zA-Z0-9_\-/\\:.]+)""".r 
+  val CreateDeploy = """create deploy ([a-zA-Z0-9_\-]+) from ([a-zA-Z0-9_\-]+)""".r 
+  val UnDeploy = """undeploy ([a-zA-Z0-9_\-]+)""".r 
 
   val GotoLast = """goto last""".r 
   val ShowNetworkSnapshot = """show network snapshot""".r 
@@ -67,6 +68,7 @@ class InterActor extends RegisteredActor  {
                 req match {
                   case CreateBuild( name, filename ) => createBuild( name, filename )
                   case CreateDeploy( name, build ) => createDeploy( name, build )
+                  case UnDeploy( name ) => undeploy( name )
                   case unmatchedReq =>
                     requestCount += 1
                     val sReq = GenericServerRequest( requestCount, unmatchedReq )
@@ -182,7 +184,33 @@ class InterActor extends RegisteredActor  {
     actorOf( new BuildPusher( location.get, sReq, self ) ).start()
   }
 
-  def createDeploy( name: String, build: String ) {
-    println( "Create Deploy: " + name + ", build = " + build )
+  def createDeploy( deployName: String, buildName: String ) {
+    location match {
+      case Some( nodeIdentity ) =>
+        val req = "create deploy"
+        requestCount += 1
+        val sReq = CreateDeployRequest( requestCount, req, deployName, buildName )
+        outstanding ::= sReq
+        println( "Req["+requestCount+"]: " + req )
+        getNode.sendAll( nodeIdentity, classOf[ServerActor], sReq )
+        println( "Create Deploy: " + deployName + ", build = " + buildName )
+      case None =>
+        println( "Can't perform that request without a current location." )
+    }
+  }
+
+  def undeploy( deployName: String ) {
+    location match {
+      case Some( nodeIdentity ) =>
+        val req = "undeploy"
+        requestCount += 1
+        val sReq = UnDeployRequest( requestCount, req, deployName )
+        outstanding ::= sReq
+        println( "Req["+requestCount+"]: " + req )
+        getNode.sendAll( nodeIdentity, classOf[ServerActor], sReq )
+        println( "UnDeploy: " + deployName )
+      case None =>
+        println( "Can't perform that request without a current location." )
+    }
   }
 }

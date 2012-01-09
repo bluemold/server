@@ -6,6 +6,7 @@ import java.io._
 import scala.math._
 import bluemold.actor.Persist.{ReadBytes, WroteBytes}
 import bluemold.io.{AsyncWriter, AsyncReader}
+import collection.immutable.HashMap
 
 object ServerActor {
   final case class ServerDownBeat() { val created = System.currentTimeMillis() }
@@ -27,6 +28,10 @@ object ServerActor {
   final case class CreateBuildReceived( override val id: Long, override val res: String, build: Build, nextSetStart: Long ) extends ServerResponse
   final case class CreateBuildMissing( override val id: Long, override val res: String, build: Build, startIndex: Long, endIndex: Long ) extends ServerResponse
   final case class CreateBuildCompleted( override val id: Long, override val res: String, build: Build ) extends ServerResponse
+
+  final case class CreateDeployRequest( override val id: Long, override val req: String, deployName: String, buildName: String ) extends ServerRequest
+
+  final case class UnDeployRequest( override val id: Long, override val req: String, deployName: String ) extends ServerRequest
 }
 class ServerActor extends RegisteredActor  {
   import ServerActor._
@@ -37,8 +42,14 @@ class ServerActor extends RegisteredActor  {
   val heartBeatDelay = 5000L
   val timeoutForNodeExisting = 300000L
 
+  var builds: HashMap[String, Build] = new HashMap[String, Build]
+  var deployed: HashMap[String, String] = new HashMap[String, String]
+  var deployments: HashMap[String, Deployment] = new HashMap[String, Deployment]
+
   protected def init() {
     localNodes = Nil
+    loadBuilds()
+    loadDeployed()
     heartBeatTimeout = onTimeout( shortDelay ) { heartBeat() }
   }
 
@@ -55,11 +66,23 @@ class ServerActor extends RegisteredActor  {
     case ServerDownBeat() =>
       reply( ServerUpBeat( getNode.getNodeId ) )
     case CreateBuildRequest( id, "create build", build ) =>
-      actorOf( new BuildPuller( id, build, replyChannel ) ).start()
+      actorOf( new BuildPuller( id, build, replyChannel, self ) ).start()
+    case CreateBuildCompleted( id, "ok", build ) =>
+      saveBuild( build )
     case GenericServerRequest( id, "status" ) =>
       reply( GenericServerResponse( id, "status of " + getNode.getNodeId + " is ok" ) )
     case GenericServerRequest( id, "list nodes" ) =>
       reply( ServerListNodesResponse( id, "nodes near " + getNode.getNodeId, ( getCurrentLocalNodes map { _._1 } ).toList ) )
+    case GenericServerRequest( id, "list builds" ) =>
+      val buildList = builds.keys.foldLeft( new StringBuilder )( (sb,name) => sb.append(':').append(name) ).toString()
+      reply( GenericServerResponse( id, "builds on " + getNode.getNodeId + " = " + buildList ) )
+    case GenericServerRequest( id, "list deploys" ) =>
+      val buildList = deployed.keys.foldLeft( new StringBuilder )( (sb,name) => sb.append(':').append(name) ).toString()
+      reply( GenericServerResponse( id, "deploys on " + getNode.getNodeId + " = " + buildList ) )
+    case CreateDeployRequest( id, "create deploy", deployName, buildName ) =>
+      createDeploy( deployName, buildName, id, replyChannel )
+    case UnDeployRequest( id, "undeploy", deployName ) =>
+      undeploy( deployName, id, replyChannel )
     case GenericServerRequest( id, "stop" ) =>
       reply( GenericServerResponse( id, "stopping " + getNode.getNodeId ) )
       onTimeout( shortDelay ) { self.stop() }
@@ -67,9 +90,113 @@ class ServerActor extends RegisteredActor  {
       reply( GenericServerResponse( id, "I don't understand: " + other ) )
     case _ => // ignore
   }
+
+  def loadBuilds() {
+    getNode.getStore.get( "builds" ) match {
+      case Some(clob) =>
+        clob.split('|') foreach { value: String =>
+          try {
+            val build = Build.deSerialize( value )
+            builds += ((build.name,build))
+          } catch {
+            case t => t.printStackTrace() // log and ignore
+          }
+        }
+      case None => // ignore  
+    }
+  }
+  def saveBuild( build: Build ) {
+    builds += ((build.name,build))
+    val sb = new StringBuilder
+    builds foreach { kv =>
+      if ( sb.size > 0 ) sb.append('|')
+      sb.append( kv._2.serialize )
+    }
+    val store = getNode.getStore
+    store.put( "builds", sb.toString() )
+    store.flush()
+  }
+  def loadDeployed() {
+    getNode.getStore.get( "deployed" ) match {
+      case Some(clob) =>
+        clob.split('|') foreach { value: String =>
+          try {
+            val pair = value.split('=')
+            if ( pair.length > 1 ) {
+              deployed += ((pair(0),pair(1)))
+              launchDeployment(pair(0),pair(1))
+            }
+          } catch {
+            case t => t.printStackTrace() // log and ignore
+          }
+        }
+      case None => // ignore  
+    }
+  }
+  private def saveDeploy() {
+    val sb = new StringBuilder
+    deployed foreach { kv =>
+      if ( sb.size > 0 ) sb.append('|')
+      sb.append( kv._1 ).append('=').append(kv._2)
+    }
+    val store = getNode.getStore
+    store.put( "deployed", sb.toString() )
+    store.flush()
+  }
+  def addDeploy( deployName: String, buildName: String ) {
+    deployed += ((deployName,buildName))
+    saveDeploy()
+  }
+  def removeDeploy( deployName: String ) {
+    deployed -= deployName
+    saveDeploy()
+  }
+  def launchDeployment( deployName: String, buildName: String ) {
+    val ( matching, remaining ) = deployments partition { _._1 == deployName }
+    matching foreach { _._2.stop() }
+    deployments = remaining
+    builds get buildName foreach { build =>
+      deployments += ((deployName,new Deployment(getNode,deployName,build)))
+    }
+  }
+  def unLaunchDeployment( deployName: String ) {
+    val ( matching, remaining ) = deployments partition { _._1 == deployName }
+    matching foreach { _._2.stop() }
+    deployments = remaining
+  }
+  def createDeploy( deployName: String, buildName: String, id: Long, replyChannel: ReplyChannel ) {
+    var success = false
+    try {
+      launchDeployment( deployName, buildName )
+      success = true
+    } catch {
+      case t => t.printStackTrace() // failed to launch
+    }
+    if ( success ) {
+      addDeploy(deployName,buildName)
+      replyChannel.issueReply( GenericServerResponse( id, "created deploy '" + deployName + "' of build '" + buildName + "' on " + getNode.getNodeId ) )
+    } else {
+      replyChannel.issueReply( GenericServerResponse( id, "failed to create deploy '" + deployName + "' of build '" + buildName + "' on " + getNode.getNodeId ) )
+    }
+  }
+  def undeploy( deployName: String, id: Long, replyChannel: ReplyChannel ) {
+    var success = false
+    try {
+      unLaunchDeployment( deployName )
+      success = true
+    } catch {
+      case t => t.printStackTrace() // failed to launch
+    }
+    if ( success ) {
+      removeDeploy(deployName)
+      replyChannel.issueReply( GenericServerResponse( id, "removed deploy '" + deployName + "' on " + getNode.getNodeId ) )
+    } else {
+      replyChannel.issueReply( GenericServerResponse( id, "failed to removed deploy '" + deployName + "' on " + getNode.getNodeId ) )
+    }
+  }
 }
 
-class BuildPuller( id: Long, build: Build, replyChannel: ReplyChannel ) extends RegisteredActor {
+class BuildPuller( id: Long, build: Build, replyChannel: ReplyChannel, parentServer: ActorRef ) extends RegisteredActor {
   import ServerActor._
 
   var out: AsyncWriter = _
@@ -145,6 +272,7 @@ class BuildPuller( id: Long, build: Build, replyChannel: ReplyChannel ) extends 
           channel.issueReply( CreateBuildReceived( id, "ok", build, waitingForStart ) )
         else {
           out.close()
+          parentServer ! CreateBuildCompleted( id, "ok", build )
           channel.issueReply( CreateBuildCompleted( id, "ok", build ) )
           onTimeout( 1000 ) { self.stop() }
         }
