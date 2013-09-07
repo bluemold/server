@@ -99,7 +99,7 @@ class ServerActor extends RegisteredActor  {
             val build = Build.deSerialize( value )
             builds += ((build.name,build))
           } catch {
-            case t => t.printStackTrace() // log and ignore
+            case t: Throwable => t.printStackTrace() // log and ignore
           }
         }
       case None => // ignore  
@@ -127,7 +127,7 @@ class ServerActor extends RegisteredActor  {
               launchDeployment(pair(0),pair(1))
             }
           } catch {
-            case t => t.printStackTrace() // log and ignore
+            case t: Throwable => t.printStackTrace() // log and ignore
           }
         }
       case None => // ignore  
@@ -170,7 +170,7 @@ class ServerActor extends RegisteredActor  {
       launchDeployment( deployName, buildName )
       success = true
     } catch {
-      case t => t.printStackTrace() // failed to launch
+      case t: Throwable => t.printStackTrace() // failed to launch
     }
     if ( success ) {
       addDeploy(deployName,buildName)
@@ -185,7 +185,7 @@ class ServerActor extends RegisteredActor  {
       unLaunchDeployment( deployName )
       success = true
     } catch {
-      case t => t.printStackTrace() // failed to launch
+      case t: Throwable => t.printStackTrace() // failed to launch
     }
     if ( success ) {
       removeDeploy(deployName)
