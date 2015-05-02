@@ -3,6 +3,8 @@ package bluemold.server
 import bluemold.actor.Actor._
 import bluemold.actor.{FiberStrategyFactory, UDPNode, ActorRef}
 
+import scala.io.StdIn
+
 
 object Interact {
   def main(args: Array[String]) {
@@ -10,7 +12,7 @@ object Interact {
     val actor = getReplActor
     print( "> " )
     while( ok ) {
-      val ln = readLine()
+      val ln = StdIn.readLine()
       ok = ln != null && ln != "exit" && ln != "quit"
       if( ok ) {
         actor ! InterActor.UserRequest( ln )
